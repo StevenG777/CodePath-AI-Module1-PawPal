@@ -6,6 +6,44 @@
 
 - Briefly describe your initial UML design.
 - What classes did you include, and what responsibilities did you assign to each?
+    - Owner class
+        - Attributes: 
+            - owner name (string) 
+            - pet names (list of string) 
+        - Methods:
+            - add user info
+            - edit user info
+            - delete user info
+            - add pet under this user
+    - Pet class
+        - Attributes:
+            - name (string)
+            - owner name (string)
+        - Methods:
+            - add pet info
+            - edit pet info
+            - delete pet info
+    - Task class
+        - Attributes:
+            - task name (string)
+            - pet name (string)
+            - duration (int)
+            - priority (category string)
+        - Methods:
+            - add task
+            - add duration and priority
+            - edit task
+            - delete task
+            - display task for certain day
+    - Scheduler
+        - Attributes:
+            - task names (list of string)
+            - durations (list of durations)
+            - priorities (list of priority)
+            - pet name (string)
+        - Methods:
+            - generate schedules
+            - display schedules
 
 **b. Design changes**
 
