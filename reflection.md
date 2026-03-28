@@ -5,6 +5,8 @@
 **a. Initial design**
 
 - Briefly describe your initial UML design.
+    We have 4 different classes (Owner, Pet, Task, Scheduler). Owner manage personal info and add their pet to the system; Pet manage pet info; Task manage task duration and priority corresponding to specific pet; Scheduler combine all tasks that belong to one pet into a plan to be view by Owner.
+    
 - What classes did you include, and what responsibilities did you assign to each?
     - Owner class
         - Attributes: 
@@ -49,7 +51,15 @@
 
 - Did your design change during implementation?
 - If yes, describe at least one change and why you made it.
-
+YES
+- Wrong Relationship
+    - Owner and Task should hold Pet object instead of Pet name, to avoid name lookup
+    - Pet has no way to look up its corresponding task while task can reference back to Pet; Pet can only do that through Scheduler. By adding task related attribute on Pet can help bypass intermediate access to Scheduler class
+- Wrong Logic
+    - Task.display_for_day() should be a Scheduler function
+    - Task.delete_task is wrong, you cannot delete an object from itself
+    - Scheduler does not have constraint attributes to fulfill the requirement of consider "time available"
+    - Owner.add_info() is redundant from Owner.__init__() just like previous Pet design
 ---
 
 ## 2. Scheduling Logic and Tradeoffs
