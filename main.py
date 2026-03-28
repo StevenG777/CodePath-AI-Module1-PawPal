@@ -1,17 +1,42 @@
 from datetime import date, timedelta
-from pawpal_system import Owner, Pet, Task, Scheduler
+from tabulate import tabulate
+from pawpal_system import Owner, Pet, Task, Scheduler, PRIORITY_LABEL, task_emoji
 
 # ---------------------------------------------------------------------------
-# Helper
+# Helpers
 # ---------------------------------------------------------------------------
+_W = 66   # box width (characters)
+
 def print_section(title: str) -> None:
-    print(f"\n{'=' * 60}")
-    print(f"  {title}")
-    print('=' * 60)
+    inner = _W - 2
+    print(f"\n┌{'─' * inner}┐")
+    print(f"│  {title:<{inner - 2}}│")
+    print(f"└{'─' * inner}┘")
 
-def print_tasks(pairs):
+
+def print_tasks(pairs: list) -> None:
+    """Print a (Pet, Task) list as a formatted tabulate table."""
+    if not pairs:
+        print("  (no tasks)")
+        return
+    rows = []
     for pet, task in pairs:
-        print(f"  [{pet.name}] {task}")
+        time_str = task.start_time_str or "—"
+        status   = "✅ Done" if task.completed else "⭕ Pending"
+        rows.append([
+            pet.name,
+            f"{task_emoji(task.task_name)} {task.task_name}",
+            PRIORITY_LABEL[task.priority],
+            time_str,
+            f"{task.duration} min",
+            task.frequency,
+            status,
+        ])
+    print(tabulate(
+        rows,
+        headers=["Pet", "Task", "Priority", "Start", "Duration", "Frequency", "Status"],
+        tablefmt="rounded_outline",
+    ))
 
 # ---------------------------------------------------------------------------
 # Setup

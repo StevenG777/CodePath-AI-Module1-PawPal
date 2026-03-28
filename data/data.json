@@ -1,0 +1,67 @@
+{
+  "name": "Alex",
+  "pets": [
+    {
+      "name": "Cat",
+      "owner_name": "Alex",
+      "tasks": [
+        {
+          "task_name": "Morning Walk",
+          "duration": 20,
+          "priority": "high",
+          "frequency": "daily",
+          "completed": false,
+          "start_time": null,
+          "last_completed_date": null,
+          "next_due_date": null
+        },
+        {
+          "task_name": "Shower",
+          "duration": 20,
+          "priority": "high",
+          "frequency": "daily",
+          "completed": false,
+          "start_time": null,
+          "last_completed_date": null,
+          "next_due_date": null
+        }
+      ]
+    },
+    {
+      "name": "Dog",
+      "owner_name": "Alex",
+      "tasks": []
+    },
+    {
+      "name": "Bird",
+      "owner_name": "Alex",
+      "tasks": []
+    },
+    {
+      "name": "Fish",
+      "owner_name": "Alex",
+      "tasks": []
+    },
+    {
+      "name": "Turtle",
+      "owner_name": "Alex",
+      "tasks": [
+        {
+          "task_name": "Sun Bathe",
+          "duration": 20,
+          "priority": "high",
+          "frequency": "daily",
+          "completed": false,
+          "start_time": null,
+          "last_completed_date": null,
+          "next_due_date": null
+        }
+      ]
+    },
+    {
+      "name": "Tiger",
+      "owner_name": "Alex",
+      "tasks": []
+    }
+  ]
+}

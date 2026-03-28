@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from itertools import combinations
@@ -8,6 +9,41 @@ Frequency = Literal["daily", "weekly", "as-needed"]
 
 # Maps priority labels to sort order (lower number = higher priority)
 PRIORITY_ORDER: dict[str, int] = {"high": 0, "medium": 1, "low": 2}
+
+# Human-readable labels used by the UI
+PRIORITY_LABEL: dict[str, str] = {"high": "🔴 High", "medium": "🟡 Medium", "low": "🟢 Low"}
+
+# Ordered keyword→emoji pairs for automatic task-name detection.
+# More specific terms appear before generic ones so they match first.
+_TASK_KEYWORDS: list[tuple[str, str]] = [
+    ("dental", "🦷"), ("teeth", "🦷"),
+    ("flea",   "🦟"), ("tick",  "🦟"),
+    ("nail",   "✂️"), ("trim",  "✂️"), ("clip",  "✂️"),
+    ("litter", "🗑️"), ("potty", "🚽"),
+    ("bath",   "🛁"), ("shampoo", "🚿"), ("wash",  "🚿"),
+    ("groom",  "🪮"), ("brush", "🪮"), ("comb",  "🪮"),
+    ("vet",    "🏥"), ("doctor", "🏥"), ("checkup", "🏥"),
+    ("medicine", "💊"), ("pill",  "💊"), ("medication", "💊"),
+    ("water",  "💧"), ("drink", "💧"),
+    ("feed",   "🍽️"), ("food",  "🍽️"), ("meal",  "🍽️"),
+    ("play",   "🎾"), ("fetch", "🎾"), ("game",  "🎾"),
+    ("train",  "🎓"),
+    ("walk",   "🚶"), ("run",   "🏃"), ("jog",   "🏃"), ("exercise", "🏋️"),
+    ("sleep",  "😴"), ("nap",   "😴"), ("rest",  "😴"),
+    ("clean",  "🧹"), ("tidy",  "🧹"),
+    ("cuddle", "🤗"), ("hug",   "🤗"),
+    ("ear",    "👂"),
+    ("check",  "🔍"), ("inspect", "🔍"),
+]
+
+
+def task_emoji(task_name: str) -> str:
+    """Return a contextual emoji for a task name, or 🐾 if no keyword matches."""
+    lower = task_name.lower()
+    for keyword, icon in _TASK_KEYWORDS:
+        if keyword in lower:
+            return icon
+    return "🐾"
 
 
 # Interval each frequency adds to today when a task is marked complete.
@@ -242,6 +278,69 @@ class Owner:
             for task in pet.tasks
         ]
 
+    # --- Persistence ---
+
+    def to_dict(self) -> dict:
+        """Serialize this Owner (with all Pets and Tasks) to a plain dict."""
+        return {
+            "name": self.name,
+            "pets": [
+                {
+                    "name": pet.name,
+                    "owner_name": pet.owner_name,
+                    "tasks": [
+                        {
+                            "task_name": task.task_name,
+                            "duration": task.duration,
+                            "priority": task.priority,
+                            "frequency": task.frequency,
+                            "completed": task.completed,
+                            "start_time": task.start_time,
+                            "last_completed_date": task.last_completed_date,
+                            "next_due_date": task.next_due_date,
+                        }
+                        for task in pet.tasks
+                    ],
+                }
+                for pet in self.pets
+            ],
+        }
+
+    def save_to_json(self, path: str = "data.json") -> None:
+        """Write the full Owner state (pets + tasks) to a JSON file."""
+        with open(path, "w") as fh:
+            json.dump(self.to_dict(), fh, indent=2)
+
+    @classmethod
+    def load_from_json(cls, path: str = "data.json") -> "Owner":
+        """
+        Reconstruct an Owner (with all Pets and Tasks) from a JSON file.
+
+        Raises FileNotFoundError if the file does not exist.
+        Raises KeyError / ValueError for malformed data so the caller
+        can decide whether to surface the error or start fresh.
+        """
+        with open(path) as fh:
+            data = json.load(fh)
+
+        owner = cls(data["name"])
+        for pet_data in data.get("pets", []):
+            pet = Pet(name=pet_data["name"], owner_name=pet_data["owner_name"])
+            for td in pet_data.get("tasks", []):
+                task = Task(
+                    task_name=td["task_name"],
+                    duration=td["duration"],
+                    priority=td["priority"],
+                    frequency=td["frequency"],
+                    completed=td.get("completed", False),
+                    start_time=td.get("start_time"),
+                    last_completed_date=td.get("last_completed_date"),
+                    next_due_date=td.get("next_due_date"),
+                )
+                pet.add_task(task)
+            owner.add_pet(pet)
+        return owner
+
     def __str__(self) -> str:
         return f"{self.name} ({len(self.pets)} pet(s))"
 
@@ -315,6 +414,94 @@ class Scheduler:
             ),
         )
 
+    def sort_by_priority(
+        self, tasks: list[tuple[Pet, Task]]
+    ) -> list[tuple[Pet, Task]]:
+        """
+        Sort (Pet, Task) pairs by priority first (high → medium → low),
+        then by start_time within the same priority level (timed tasks
+        before unscheduled), then by shortest duration as a tiebreaker.
+
+        This ordering guarantees that high-priority tasks are never skipped
+        by the greedy scheduler in favour of a lower-priority timed task —
+        the most important work always gets the first claim on the time budget.
+        """
+        return sorted(
+            tasks,
+            key=lambda pt: (
+                PRIORITY_ORDER[pt[1].priority],
+                pt[1].start_time if pt[1].start_time is not None else float("inf"),
+                pt[1].duration,
+            ),
+        )
+
+    def find_next_available_slot(
+        self,
+        duration: int,
+        start_after: int = 360,
+        end_by: int = 1320,
+    ) -> Optional[int]:
+        """
+        Find the earliest gap in today's timed tasks that can fit a new task
+        of the requested duration, searching within [start_after, end_by).
+
+        Algorithm (O(n log n)):
+          1. Collect all incomplete timed tasks and sort once by start_time.
+          2. Walk the sorted list with a `cursor` that starts at start_after.
+          3. For each existing task, check whether [cursor, cursor+duration)
+             fits before the task begins. If yes, return cursor. Otherwise,
+             advance cursor to the end of this blocking task (if it extends
+             further than cursor).
+          4. After all tasks, check whether [cursor, end_by) is large enough.
+
+        The scan is O(n) after sorting — no quadratic comparisons, no
+        backtracking. Complements get_conflicts() (which detects existing
+        overlaps) by proactively finding where a new task *can* go.
+
+        Args:
+            duration:    Required gap size in minutes (must be > 0).
+            start_after: Earliest acceptable start time in minutes from
+                         midnight (default 360 = 06:00).
+            end_by:      Latest acceptable finish time in minutes from
+                         midnight (default 1320 = 22:00).
+
+        Returns the start_time (minutes from midnight) of the first
+        available gap, or None if no gap of sufficient size exists.
+        """
+        if duration <= 0 or start_after < 0 or end_by > 1440:
+            return None
+        if start_after + duration > end_by:
+            return None
+
+        # Collect and sort incomplete timed tasks by start_time.
+        timed = sorted(
+            (
+                task
+                for _, task in self.get_all_tasks()
+                if task.start_time is not None and not task.completed
+            ),
+            key=lambda t: t.start_time,  # type: ignore[return-value]
+        )
+
+        cursor = start_after
+        for task in timed:
+            assert task.start_time is not None
+            task_end = task.start_time + task.duration
+            # Task ends before the cursor — already behind us, skip it.
+            if task_end <= cursor:
+                continue
+            # Does [cursor, cursor+duration) fit before this task begins?
+            if cursor + duration <= task.start_time:
+                return cursor
+            # Task blocks the cursor — push past its end.
+            cursor = task_end
+
+        # Check the tail window after all timed tasks.
+        if cursor + duration <= end_by:
+            return cursor
+
+        return None
+
     def warn_conflicts(self) -> int:
         """
         Print a human-readable WARNING for every detected time conflict.
@@ -382,7 +569,9 @@ class Scheduler:
         """
         Build today's plan:
           1. Collect all incomplete tasks that are due today (respects recurrence).
-          2. Sort by start_time → priority → duration.
+          2. Sort by priority → start_time → duration so that high-priority tasks
+             always get the first claim on the time budget, regardless of whether
+             they have a pinned start time.
           3. Greedily add tasks until available_minutes is exhausted.
 
         Recurrence rules (via _is_due):
@@ -401,7 +590,7 @@ class Scheduler:
             for pet, task in self.get_all_tasks()
             if not task.completed and task.is_ready
         ]
-        pending = self.sort_by_time(pending)
+        pending = self.sort_by_priority(pending)
 
         schedule: list[tuple[Pet, Task]] = []
         time_remaining = self.available_minutes
