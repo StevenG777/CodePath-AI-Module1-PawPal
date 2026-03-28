@@ -1,4 +1,6 @@
 from dataclasses import dataclass, field
+from datetime import date, timedelta
+from itertools import combinations
 from typing import Literal, Optional
 
 Priority = Literal["high", "medium", "low"]
@@ -6,6 +8,21 @@ Frequency = Literal["daily", "weekly", "as-needed"]
 
 # Maps priority labels to sort order (lower number = higher priority)
 PRIORITY_ORDER: dict[str, int] = {"high": 0, "medium": 1, "low": 2}
+
+
+# Interval each frequency adds to today when a task is marked complete.
+# as-needed has no automatic interval — it stays complete until manually reset.
+_RECURRENCE_DELTA: dict[str, timedelta | None] = {
+    "daily":     timedelta(days=1),
+    "weekly":    timedelta(days=7),
+    "as-needed": None,
+}
+
+
+def _mins_to_hhmm(minutes: int) -> str:
+    """Convert an integer number of minutes-from-midnight to 'HH:MM' string."""
+    h, m = divmod(minutes, 60)
+    return f"{h:02d}:{m:02d}"
 
 
 # ---------------------------------------------------------------------------
@@ -18,10 +35,66 @@ PRIORITY_ORDER: dict[str, int] = {"high": 0, "medium": 1, "low": 2}
 @dataclass
 class Task:
     task_name: str
-    duration: int       # minutes
+    duration: int               # minutes
     priority: Priority
     frequency: Frequency = "daily"
     completed: bool = False
+    start_time: Optional[int] = None           # minutes from midnight (0–1439); None = unscheduled
+    last_completed_date: Optional[str] = None  # ISO "YYYY-MM-DD", set by mark_complete()
+    next_due_date: Optional[str] = None        # ISO "YYYY-MM-DD"; None = due now
+
+    def __post_init__(self) -> None:
+        """Validate fields at construction so bad data never enters the system."""
+        if self.duration <= 0:
+            raise ValueError(
+                f"Task '{self.task_name}': duration must be > 0, got {self.duration}"
+            )
+        if self.start_time is not None:
+            if not (0 <= self.start_time <= 1439):
+                raise ValueError(
+                    f"Task '{self.task_name}': start_time must be 0–1439 "
+                    f"(minutes from midnight), got {self.start_time}"
+                )
+            if self.start_time + self.duration > 1440:
+                raise ValueError(
+                    f"Task '{self.task_name}': window runs past midnight — "
+                    f"{_mins_to_hhmm(self.start_time)} + {self.duration} min "
+                    f"= {_mins_to_hhmm(self.start_time + self.duration)}"
+                )
+
+    # --- helpers ---
+
+    @property
+    def start_time_str(self) -> Optional[str]:
+        """Human-readable HH:MM for start_time, or None if unset."""
+        if self.start_time is None:
+            return None
+        h, m = divmod(self.start_time, 60)
+        return f"{h:02d}:{m:02d}"
+
+    @property
+    def is_ready(self) -> bool:
+        """
+        True when this task's recurrence window has elapsed and it should
+        appear in a new schedule.
+
+        None means never completed (or manually reset) → always ready.
+        AI suggestion adopted: collapse the two-branch if/return into a
+        single boolean expression — same logic, one fewer branch.
+        """
+        return (
+            self.next_due_date is None
+            or date.today() >= date.fromisoformat(self.next_due_date)
+        )
+
+    @property
+    def end_time(self) -> Optional[int]:
+        """Minutes from midnight when this task finishes, or None if unscheduled."""
+        if self.start_time is None:
+            return None
+        return self.start_time + self.duration
+
+    # --- mutations ---
 
     def edit_task(
         self,
@@ -29,6 +102,7 @@ class Task:
         duration: Optional[int] = None,
         priority: Optional[Priority] = None,
         frequency: Optional[Frequency] = None,
+        start_time: Optional[int] = None,
     ) -> None:
         """Update any combination of task fields in place."""
         if task_name is not None:
@@ -39,20 +113,35 @@ class Task:
             self.priority = priority
         if frequency is not None:
             self.frequency = frequency
+        if start_time is not None:
+            self.start_time = start_time
 
-    def mark_complete(self) -> None:
-        """Mark this task as done for the day."""
+    def mark_complete(self, as_of: Optional[date] = None) -> None:
+        """
+        Mark this task done and schedule its next occurrence using timedelta.
+
+        - daily     → next_due_date = today + timedelta(days=1)
+        - weekly    → next_due_date = today + timedelta(days=7)
+        - as-needed → next_due_date stays None (no automatic recurrence)
+        """
+        today = as_of or date.today()
         self.completed = True
+        self.last_completed_date = today.isoformat()
+        delta = _RECURRENCE_DELTA[self.frequency]
+        self.next_due_date = (today + delta).isoformat() if delta is not None else None
 
     def reset(self) -> None:
-        """Reset completion status (e.g. start of a new day)."""
+        """Clear completion state so this task appears in the next schedule."""
         self.completed = False
+        self.next_due_date = None
 
     def __str__(self) -> str:
         status = "✓" if self.completed else "○"
+        time_part = f" @ {self.start_time_str}" if self.start_time_str else ""
+        due_part = f" | next: {self.next_due_date}" if self.next_due_date else ""
         return (
-            f"[{status}] {self.task_name} "
-            f"({self.duration} min | {self.priority} priority | {self.frequency})"
+            f"[{status}] {self.task_name}{time_part} "
+            f"({self.duration} min | {self.priority} priority | {self.frequency}{due_part})"
         )
 
 
@@ -193,22 +282,126 @@ class Scheduler:
             if task.priority == priority
         ]
 
+    def filter_by_status(self, completed: bool) -> list[tuple[Pet, Task]]:
+        """Return all tasks that match the given completion status."""
+        return [
+            (pet, task)
+            for pet, task in self.get_all_tasks()
+            if task.completed == completed
+        ]
+
+    def filter_by_frequency(self, frequency: Frequency) -> list[tuple[Pet, Task]]:
+        """Return all tasks that match the given frequency."""
+        return [
+            (pet, task)
+            for pet, task in self.get_all_tasks()
+            if task.frequency == frequency
+        ]
+
+    def sort_by_time(
+        self, tasks: list[tuple[Pet, Task]]
+    ) -> list[tuple[Pet, Task]]:
+        """
+        Sort (Pet, Task) pairs so that time-slotted tasks come first
+        (ordered by start_time), followed by unscheduled tasks ordered by
+        priority then duration.
+        """
+        return sorted(
+            tasks,
+            key=lambda pt: (
+                pt[1].start_time if pt[1].start_time is not None else float("inf"),
+                PRIORITY_ORDER[pt[1].priority],
+                pt[1].duration,
+            ),
+        )
+
+    def warn_conflicts(self) -> int:
+        """
+        Print a human-readable WARNING for every detected time conflict.
+        Never raises — callers can always continue safely.
+
+        Returns the number of conflicts found (0 = schedule is clean).
+
+        Strategy (lightweight):
+          For each conflicting pair, emit one line that names both tasks,
+          their owners/pets, their time windows, and how many minutes they
+          overlap.  That gives enough detail to fix the schedule without
+          flooding the console.
+        """
+        conflicts = self.get_conflicts()
+        if not conflicts:
+            print("  ✓ No scheduling conflicts detected.")
+            return 0
+
+        print(f"  ⚠ WARNING: {len(conflicts)} conflict(s) found in today's schedule:")
+        for (p1, t1), (p2, t2) in conflicts:
+            assert t1.start_time is not None and t2.start_time is not None
+            # Calculate overlap span (minutes)
+            overlap_start = max(t1.start_time, t2.start_time)
+            overlap_end   = min(t1.start_time + t1.duration, t2.start_time + t2.duration)
+            overlap_mins  = overlap_end - overlap_start
+            print(
+                f"    • [{p1.name}] {t1.task_name} ({t1.start_time_str}–"
+                f"{_mins_to_hhmm(t1.start_time + t1.duration)}, {t1.duration} min)"
+                f"  overlaps  "
+                f"[{p2.name}] {t2.task_name} ({t2.start_time_str}–"
+                f"{_mins_to_hhmm(t2.start_time + t2.duration)}, {t2.duration} min)"
+                f"  by {overlap_mins} min"
+            )
+        return len(conflicts)
+
+    def get_conflicts(self) -> list[tuple[tuple[Pet, Task], tuple[Pet, Task]]]:
+        """
+        Detect pairs of incomplete tasks whose explicit time windows overlap.
+        Only tasks with a start_time set are considered.
+
+        Two tasks conflict when their intervals [start, start+duration) intersect:
+            s1 < s2 + d2  AND  s2 < s1 + d1
+        """
+        # AI suggestion adopted: combinations(timed, 2) replaces the manual
+        # range(len(...))/index pattern and directly expresses "all unique pairs"
+        # without off-by-one risk.  The assert satisfies the type checker since
+        # Optional[int] can't be narrowed across the list comprehension boundary.
+        timed = [
+            (pet, task)
+            for pet, task in self.get_all_tasks()
+            if task.start_time is not None and not task.completed
+        ]
+        conflicts: list[tuple[tuple[Pet, Task], tuple[Pet, Task]]] = []
+        for (p1, t1), (p2, t2) in combinations(timed, 2):
+            assert t1.start_time is not None and t2.start_time is not None
+            s1, e1 = t1.start_time, t1.start_time + t1.duration
+            s2, e2 = t2.start_time, t2.start_time + t2.duration
+            if s1 < e2 and s2 < e1:
+                conflicts.append(((p1, t1), (p2, t2)))
+        return conflicts
+
     # --- Core scheduling logic ---
 
     def generate_schedule(self) -> list[tuple[Pet, Task]]:
         """
         Build today's plan:
-          1. Collect all incomplete tasks across all pets.
-          2. Sort by priority (high → medium → low).
+          1. Collect all incomplete tasks that are due today (respects recurrence).
+          2. Sort by start_time → priority → duration.
           3. Greedily add tasks until available_minutes is exhausted.
-        Returns a list of (Pet, Task) pairs in scheduled order.
+
+        Recurrence rules (via _is_due):
+          - daily     → always included
+          - weekly    → skipped if completed within the last 7 days
+          - as-needed → always included (lowest priority, never skipped by recurrence)
         """
+        # Guard: no time budget means nothing can be scheduled.
+        # AI would assume a positive budget — this catches the "weird user
+        # behavior" case of available_minutes=0 before looping over all tasks.
+        if self.available_minutes <= 0:
+            return []
+
         pending = [
             (pet, task)
             for pet, task in self.get_all_tasks()
-            if not task.completed
+            if not task.completed and task.is_ready
         ]
-        pending.sort(key=lambda pt: PRIORITY_ORDER[pt[1].priority])
+        pending = self.sort_by_time(pending)
 
         schedule: list[tuple[Pet, Task]] = []
         time_remaining = self.available_minutes
@@ -261,7 +454,29 @@ class Scheduler:
             return False
         return pet.remove_task(task_name)
 
+    def advance_day(self, as_of: Optional[date] = None) -> list[Task]:
+        """
+        Simulate a day rollover: reset every completed task whose next_due_date
+        has arrived (i.e. as_of >= next_due_date).
+
+        Pass `as_of` to simulate a future date in tests or demos; defaults to
+        date.today().
+
+        Returns the list of tasks that were reset so callers can report them.
+        """
+        today = as_of or date.today()
+        reset_tasks: list[Task] = []
+        for _, task in self.get_all_tasks():
+            if (
+                task.completed
+                and task.next_due_date is not None
+                and today >= date.fromisoformat(task.next_due_date)
+            ):
+                task.reset()
+                reset_tasks.append(task)
+        return reset_tasks
+
     def reset_all_tasks(self) -> None:
-        """Reset completion status on every task (call at day rollover)."""
+        """Force-reset every task regardless of recurrence (e.g. full day wipe)."""
         for pet in self.owner.pets:
             pet.reset_day()

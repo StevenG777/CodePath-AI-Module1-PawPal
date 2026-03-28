@@ -67,12 +67,24 @@ YES
 **a. Constraints and priorities**
 
 - What constraints does your scheduler consider (for example: time, priority, preferences)?
+The scheduler considers three constraints: 
+    1. available time (available_minutes)
+    2. task priority (high/medium/low)
+    3. recurrence readiness (whether enough time has elapsed for a weekly or daily task to be due again)
+
 - How did you decide which constraints mattered most?
+Decisions:
+    1. Time was made the primary constraint because it's the most objective. i.e. you can't create more minutes in a day. 
+    2. Priority was second because not all pet care tasks are equally urgent. i.e. a flea treatment can wait; a feeding can't. 
+    3. Recurrence was last because it's a correctness concern, not a preference. i.e.a weekly grooming that was done yesterday shouldn't appear today regardless of priority.
 
 **b. Tradeoffs**
 
 - Describe one tradeoff your scheduler makes.
+The scheduler uses a greedy algorithm: it picks tasks in priority order and adds each one if it fits, skipping it permanently if it doesn't, for which it never backtracks to try a different combination.
+
 - Why is that tradeoff reasonable for this scenario?
+This is more efficient in handling tasks in large scale
 
 ---
 
