@@ -108,11 +108,19 @@ This is more efficient in handling tasks in large scale
 
 - What behaviors did you test?
 - Why were these tests important?
+I tested all the core smart functions:
+    - Sorting Correctness
+    - Recurrence Logic
+    - Conflict Detection
+    - Schedule Generation Edge Cases
+They are important because they are proof that the app is reliable in performing these functions
 
 **b. Confidence**
 
 - How confident are you that your scheduler works correctly?
 - What edge cases would you test next if you had more time?
+Sorting Correctness
+I am 10/10 confident, I could not think of any edge case so far to test next.git add .
 
 ---
 
